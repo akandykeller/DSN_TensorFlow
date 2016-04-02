@@ -165,16 +165,16 @@ def main(argv=None):  # pylint: disable=unused-argument
 
   # Additionally define the deep supervision softmax weights for the first
   # convolutional layer
-  ds1_weights = tf.truncated_normal([14 * 14 * 32, NUM_LABELS],
+  ds1_fc1_weights = tf.truncated_normal([14 * 14 * 32, 500],
                                     stddev=0.1,
                                     seed=SEED)
-  ds1_biases = tf.Variable(tf.zeros([NUM_LABELS]))
-  # And for the second. Note how the size of the images is halving at each
-  # layer due to the 2x2 maxpooling
-  ds2_weights = tf.truncated_normal([7 * 7 * 64, NUM_LABELS],
+  ds1_fc1_biases = tf.Variable(tf.zeros([500]))
+
+  ds1_fc2_weights = tf.truncated_normal([500, NUM_LABELS],
                                     stddev=0.1,
                                     seed=SEED)
-  ds2_biases = tf.Variable(tf.zeros([NUM_LABELS]))
+  ds1_fc2_biases = tf.Variable(tf.zeros([NUM_LABELS]))
+
 
   # We will replicate the model structure for the training subgraph, as well
   # as the evaluation subgraphs, while sharing the trainable parameters.
@@ -183,51 +183,54 @@ def main(argv=None):  # pylint: disable=unused-argument
     # 2D convolution, with 'SAME' padding (i.e. the output feature map has
     # the same size as the input). Note that {strides} is a 4D array whose
     # shape matches the data layout: [image index, y, x, depth].
-    conv = tf.nn.conv2d(data,
+    conv1 = tf.nn.conv2d(data,
                         conv1_weights,
                         strides=[1, 1, 1, 1],
                         padding='SAME')
     # Bias and rectified linear non-linearity.
-    relu = tf.nn.relu(tf.nn.bias_add(conv, conv1_biases))
+    relu1 = tf.nn.relu(tf.nn.bias_add(conv1, conv1_biases))
     # Max pooling. The kernel size spec {ksize} also follows the layout of
     # the data. Here we have a pooling window of 2, and a stride of 2.
-    pool = tf.nn.max_pool(relu,
+    pool1 = tf.nn.max_pool(relu1,
                           ksize=[1, 2, 2, 1],
                           strides=[1, 2, 2, 1],
                           padding='SAME')
-    # Flatten the pooled output so we can pass it to the softmax
-    pool1_flat = tf.reshape(pool, [-1, 14*14*32])
-    logits_ds1 = tf.matmul(pool1_flat, ds1_weights) + ds1_biases
+    
+    # Flatten the pooled output so we can pass it to the first
+    # fully connected layer before the softmax
+    pool1_flat = tf.reshape(pool1, [-1, 14*14*32])
+    hidden1 = tf.nn.relu(tf.matmul(pool1_flat, ds1_fc1_weights) + ds1_fc1_biases)
+    if train:
+      hidden1 = tf.nn.dropout(hidden1, 0.5, seed=SEED)
+    logits_ds1 = tf.matmul(hidden1, ds1_fc2_weights) + ds1_fc2_biases
 
-    conv = tf.nn.conv2d(pool,
+    conv2 = tf.nn.conv2d(pool1,
                         conv2_weights,
                         strides=[1, 1, 1, 1],
                         padding='SAME')
-    relu = tf.nn.relu(tf.nn.bias_add(conv, conv2_biases))
-    pool = tf.nn.max_pool(relu,
+    relu2 = tf.nn.relu(tf.nn.bias_add(conv2, conv2_biases))
+    pool2 = tf.nn.max_pool(relu2,
                           ksize=[1, 2, 2, 1],
                           strides=[1, 2, 2, 1],
                           padding='SAME')
-    pool2_flat = tf.reshape(pool, [-1, 7*7*64])
-    logits_ds2 = tf.matmul(pool2_flat, ds2_weights) + ds2_biases
 
     # Reshape the feature map cuboid into a 2D matrix to feed it to the
     # fully connected layers.
-    pool_shape = pool.get_shape().as_list()
+    pool2_shape = pool2.get_shape().as_list()
     reshape = tf.reshape(
-        pool,
-        [pool_shape[0], pool_shape[1] * pool_shape[2] * pool_shape[3]])
+        pool2,
+        [pool2_shape[0], pool2_shape[1] * pool2_shape[2] * pool2_shape[3]])
     # Fully connected layer. Note that the '+' operation automatically
     # broadcasts the biases.
-    hidden = tf.nn.relu(tf.matmul(reshape, fc1_weights) + fc1_biases)
+    hidden_out = tf.nn.relu(tf.matmul(reshape, fc1_weights) + fc1_biases)
     # Add a 50% dropout during training only. Dropout also scales
     # activations such that no rescaling is needed at evaluation time.
     if train:
-      hidden = tf.nn.dropout(hidden, 0.5, seed=SEED)
-    return (tf.matmul(hidden, fc2_weights) + fc2_biases, logits_ds1, logits_ds2)
+      hidden_out = tf.nn.dropout(hidden_out, 0.5, seed=SEED)
+    return (tf.matmul(hidden_out, fc2_weights) + fc2_biases, logits_ds1)
 
   # Training computation: logits + cross-entropy loss.
-  logits, logits_ds1, logits_ds2 = model(train_data_node, True)
+  logits, logits_ds1 = model(train_data_node, True)
   loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
       logits, train_labels_node))
 
@@ -241,16 +244,11 @@ def main(argv=None):  # pylint: disable=unused-argument
   ds1_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
                             logits_ds1, train_labels_node))
   # Add regularization for softmax layer weights
-  ds1_loss +=  LAMBDA_REG * (tf.nn.l2_loss(ds1_weights) + tf.nn.l2_loss(ds1_biases))
-
-  ds2_loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(
-                            logits_ds2, train_labels_node))
-
-  ds2_loss +=  LAMBDA_REG * (tf.nn.l2_loss(ds2_weights) + tf.nn.l2_loss(ds2_biases))
+  ds1_loss +=  LAMBDA_REG * (tf.nn.l2_loss(ds1_fc1_weights) + tf.nn.l2_loss(ds1_fc1_biases)
+                            + tf.nn.l2_loss(ds1_fc2_weights) + tf.nn.l2_loss(ds1_fc2_biases))
 
   # Use gamma threshold method to pursue companion objective zeroing
   loss += ALPHA_DS1 * tf.maximum(ds1_loss - GAMMA, 0)
-  loss += ALPHA_DS2 * tf.maximum(ds2_loss - GAMMA, 0)
 
   # Optimizer: set up a variable that's incremented once per batch and
   # controls the learning rate decay.
