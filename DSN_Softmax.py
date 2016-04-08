@@ -1,4 +1,5 @@
-"""Simple, end-to-end, LeNet-5-like convolutional MNIST model example.
+"""
+Simple, end-to-end, LeNet-5-like convolutional MNIST model example.
 
 This should achieve a test error of 0.8%. Please keep this model as simple and
 linear as possible, it is meant as a tutorial for simple convolutional models.
@@ -30,8 +31,8 @@ SEED = 66478  # Set to None for random seed.
 BATCH_SIZE = 64
 NUM_EPOCHS = 125
 LAMBDA_REG = 5e-4 
-GAMMA = 0.1 # Threshold for companion objective to contribute to loss
-ALPHA_DS1 = 0.5 # Tradeoff between importance of companion objective 
+GAMMA = 8.0 # Threshold for companion objective to contribute to loss
+ALPHA_DS1 = 0.3 # Tradeoff between importance of companion objective 
 ALPHA_DS2 = 0.5 # and main objective for each layer independantly
 
 tf.app.flags.DEFINE_boolean("self_test", False, "True if running a self test.")
@@ -168,13 +169,12 @@ def main(argv=None):  # pylint: disable=unused-argument
   ds1_fc1_weights = tf.truncated_normal([14 * 14 * 32, 500],
                                     stddev=0.1,
                                     seed=SEED)
-  ds1_fc1_biases = tf.Variable(tf.zeros([500]))
+  ds1_fc1_biases = tf.Variable(tf.constant(0.1, shape=[500]))
 
   ds1_fc2_weights = tf.truncated_normal([500, NUM_LABELS],
                                     stddev=0.1,
                                     seed=SEED)
-  ds1_fc2_biases = tf.Variable(tf.zeros([NUM_LABELS]))
-
+  ds1_fc2_biases = tf.Variable(tf.constant(0.1, shape=[NUM_LABELS]))
 
   # We will replicate the model structure for the training subgraph, as well
   # as the evaluation subgraphs, while sharing the trainable parameters.
